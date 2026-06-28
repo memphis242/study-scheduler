@@ -1,0 +1,22 @@
+study-scheduler-handoff.md
+
+# Local data
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+
+# Rust
+target/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Logs and editor state
+*.log
+.DS_Store
+.idea/
+.vscode/
