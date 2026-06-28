@@ -1,6 +1,8 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+use crate::scheduler::{FeasibilityIssue, SessionExplanation};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PriorityWeights {
@@ -136,4 +138,97 @@ pub struct BootstrapData {
     pub study_windows: Vec<AvailabilityWindow>,
     pub blocked_intervals: Vec<AvailabilityWindow>,
     pub capacity_overrides: Vec<CapacityOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedScheduleRun {
+    pub id: String,
+    pub status: ScheduleRunStatus,
+    pub name: Option<String>,
+    pub start_date: NaiveDate,
+    pub end_date: NaiveDate,
+    pub pinned: bool,
+    pub issues: Vec<FeasibilityIssue>,
+    pub sessions: Vec<PersistedSession>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleRunStatus {
+    Current,
+    Previous,
+    Reference,
+    Simulation,
+}
+
+impl ScheduleRunStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Previous => "previous",
+            Self::Reference => "reference",
+            Self::Simulation => "simulation",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "previous" => Self::Previous,
+            "reference" => Self::Reference,
+            "simulation" => Self::Simulation,
+            _ => Self::Current,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedSession {
+    pub id: String,
+    pub run_id: String,
+    pub topic_id: String,
+    pub topic_name: String,
+    pub focus_name: String,
+    pub date: NaiveDate,
+    pub start_minute: i64,
+    pub end_minute: i64,
+    pub status: SessionStatus,
+    pub locked: bool,
+    pub explanation: SessionExplanation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    Planned,
+    Locked,
+    Complete,
+    Partial,
+    Missed,
+    Manual,
+}
+
+impl SessionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Planned => "planned",
+            Self::Locked => "locked",
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Missed => "missed",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "locked" => Self::Locked,
+            "complete" => Self::Complete,
+            "partial" => Self::Partial,
+            "missed" => Self::Missed,
+            "manual" => Self::Manual,
+            _ => Self::Planned,
+        }
+    }
 }

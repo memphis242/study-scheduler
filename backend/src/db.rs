@@ -6,8 +6,11 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use uuid::Uuid;
 
 use crate::models::{
-    AppSettings, AvailabilityWindow, BootstrapData, CapacityOverride, Topic, WindowKind,
+    AppSettings, AvailabilityWindow, BootstrapData, CapacityOverride, PersistedScheduleRun,
+    PersistedSession, ScheduleRunStatus, SessionStatus, Topic, WindowKind,
 };
+use crate::priority::{EloUpdate, apply_elo_win};
+use crate::scheduler::{SchedulePreview, SessionExplanation};
 
 const SETTINGS_KEY: &str = "app_settings";
 const SEEDED_TOPICS: &[(&str, &[&str], bool)] = &[
@@ -145,6 +148,434 @@ pub fn list_capacity_overrides(conn: &Connection) -> Result<Vec<CapacityOverride
     let rows = stmt.query_map([], capacity_override_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to load capacity overrides")
+}
+
+pub fn save_bootstrap(conn: &Connection, data: &BootstrapData) -> Result<BootstrapData> {
+    save_settings(conn, &data.settings)?;
+    upsert_topics(conn, &data.topics)?;
+    replace_windows(conn, "study_windows", &data.study_windows)?;
+    replace_windows(conn, "blocked_intervals", &data.blocked_intervals)?;
+    replace_capacity_overrides(conn, &data.capacity_overrides)?;
+    load_bootstrap(conn)
+}
+
+pub fn apply_priority_comparison(
+    conn: &Connection,
+    winner_topic_id: &str,
+    loser_topic_id: &str,
+    k_factor: f64,
+) -> Result<EloUpdate> {
+    let winner_before = topic_elo(conn, winner_topic_id)
+        .with_context(|| format!("winner topic not found: {winner_topic_id}"))?;
+    let loser_before = topic_elo(conn, loser_topic_id)
+        .with_context(|| format!("loser topic not found: {loser_topic_id}"))?;
+    let update = apply_elo_win(winner_before, loser_before, k_factor);
+
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "update topics set elo = ?1, updated_at = current_timestamp where id = ?2",
+        params![update.winner_after, winner_topic_id],
+    )?;
+    tx.execute(
+        "update topics set elo = ?1, updated_at = current_timestamp where id = ?2",
+        params![update.loser_after, loser_topic_id],
+    )?;
+    tx.execute(
+        "insert into priority_comparisons (
+            id, winner_topic_id, loser_topic_id, winner_elo_before, loser_elo_before,
+            winner_elo_after, loser_elo_after, k_factor
+         )
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            Uuid::new_v4().to_string(),
+            winner_topic_id,
+            loser_topic_id,
+            update.winner_before,
+            update.loser_before,
+            update.winner_after,
+            update.loser_after,
+            update.k_factor
+        ],
+    )?;
+    tx.commit()?;
+    Ok(update)
+}
+
+pub fn save_current_schedule(
+    conn: &Connection,
+    preview: &SchedulePreview,
+) -> Result<PersistedScheduleRun> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "delete from schedule_runs where status = 'previous' and pinned = 0",
+        [],
+    )?;
+    tx.execute(
+        "update schedule_runs
+         set status = 'previous'
+         where status = 'current'",
+        [],
+    )?;
+
+    let run_id = Uuid::new_v4().to_string();
+    tx.execute(
+        "insert into schedule_runs (
+            id, status, name, start_date, end_date, pinned, feasibility_json
+         )
+         values (?1, 'current', null, ?2, ?3, 0, ?4)",
+        params![
+            run_id,
+            preview.start_date.to_string(),
+            preview.end_date.to_string(),
+            serde_json::to_string(&preview.issues)?
+        ],
+    )?;
+
+    for session in &preview.sessions {
+        tx.execute(
+            "insert into sessions (
+                id, run_id, topic_id, focus_name, date, start_minute, end_minute,
+                status, locked, explanation_json
+             )
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'planned', 0, ?8)",
+            params![
+                session.id,
+                run_id,
+                session.topic_id,
+                session.focus_name,
+                session.date.to_string(),
+                session.start_minute,
+                session.end_minute,
+                serde_json::to_string(&session.explanation)?
+            ],
+        )?;
+    }
+    tx.commit()?;
+    get_schedule_run(conn, &run_id)?.context("saved schedule run was not found")
+}
+
+pub fn get_schedule_by_status(
+    conn: &Connection,
+    status: ScheduleRunStatus,
+) -> Result<Option<PersistedScheduleRun>> {
+    let run_id: Option<String> = conn
+        .query_row(
+            "select id from schedule_runs where status = ?1 order by created_at desc limit 1",
+            [status.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    run_id
+        .map(|id| get_schedule_run(conn, &id))
+        .transpose()
+        .map(Option::flatten)
+}
+
+pub fn list_reference_schedules(conn: &Connection) -> Result<Vec<PersistedScheduleRun>> {
+    let mut stmt = conn.prepare(
+        "select id from schedule_runs where status = 'reference' order by created_at desc",
+    )?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.into_iter()
+        .map(|id| get_schedule_run(conn, &id)?.context("reference schedule missing"))
+        .collect()
+}
+
+pub fn pin_schedule_reference(conn: &Connection, run_id: &str, name: Option<&str>) -> Result<()> {
+    conn.execute(
+        "update schedule_runs
+         set status = 'reference', pinned = 1, name = coalesce(?2, name)
+         where id = ?1",
+        params![run_id, name],
+    )?;
+    Ok(())
+}
+
+pub fn update_session(
+    conn: &Connection,
+    session_id: &str,
+    date: NaiveDate,
+    start_minute: i64,
+    end_minute: i64,
+    locked: bool,
+    status: SessionStatus,
+) -> Result<PersistedSession> {
+    conn.execute(
+        "update sessions
+         set date = ?2, start_minute = ?3, end_minute = ?4, locked = ?5, status = ?6
+         where id = ?1",
+        params![
+            session_id,
+            date.to_string(),
+            start_minute,
+            end_minute,
+            bool_to_int(locked),
+            status.as_str()
+        ],
+    )?;
+    get_session(conn, session_id)?.context("session not found after update")
+}
+
+pub fn log_session(
+    conn: &Connection,
+    session_id: Option<&str>,
+    topic_id: &str,
+    date: NaiveDate,
+    minutes: i64,
+    note: &str,
+    status: Option<SessionStatus>,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "insert into study_logs (id, session_id, topic_id, date, minutes, note)
+         values (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            Uuid::new_v4().to_string(),
+            session_id,
+            topic_id,
+            date.to_string(),
+            minutes,
+            note
+        ],
+    )?;
+    tx.execute(
+        "update topics
+         set completed_minutes = completed_minutes + ?1, updated_at = current_timestamp
+         where id = ?2",
+        params![minutes, topic_id],
+    )?;
+    if let (Some(id), Some(session_status)) = (session_id, status) {
+        tx.execute(
+            "update sessions set status = ?2 where id = ?1",
+            params![id, session_status.as_str()],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn last_studied_dates(
+    conn: &Connection,
+) -> Result<std::collections::HashMap<String, NaiveDate>> {
+    let mut stmt = conn.prepare("select topic_id, max(date) from study_logs group by topic_id")?;
+    let rows = stmt.query_map([], |row| {
+        let topic_id: String = row.get(0)?;
+        let date_text: String = row.get(1)?;
+        let date = NaiveDate::parse_from_str(&date_text, "%Y-%m-%d")
+            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+        Ok((topic_id, date))
+    })?;
+    rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()
+        .context("failed to load last studied dates")
+}
+
+fn upsert_topics(conn: &Connection, topics: &[Topic]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for (index, topic) in topics.iter().enumerate() {
+        tx.execute(
+            "insert into topics (
+                id, name, min_session_minutes, target_minutes, deadline, completed_minutes,
+                elo, core_weekly_sessions, archived, active_focus_index, created_order
+             )
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             on conflict(id) do update set
+                name = excluded.name,
+                min_session_minutes = excluded.min_session_minutes,
+                target_minutes = excluded.target_minutes,
+                deadline = excluded.deadline,
+                completed_minutes = excluded.completed_minutes,
+                elo = excluded.elo,
+                core_weekly_sessions = excluded.core_weekly_sessions,
+                archived = excluded.archived,
+                active_focus_index = excluded.active_focus_index,
+                created_order = excluded.created_order,
+                updated_at = current_timestamp",
+            params![
+                topic.id,
+                topic.name,
+                topic.min_session_minutes,
+                topic.target_minutes,
+                topic.deadline.map(|date| date.to_string()),
+                topic.completed_minutes,
+                topic.elo,
+                topic.core_weekly_sessions,
+                bool_to_int(topic.archived),
+                topic.active_focus_index,
+                index as i64
+            ],
+        )?;
+        tx.execute("delete from topic_members where topic_id = ?1", [&topic.id])?;
+        for (position, member_name) in topic.members.iter().enumerate() {
+            tx.execute(
+                "insert into topic_members (id, topic_id, position, name)
+                 values (?1, ?2, ?3, ?4)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    topic.id,
+                    position as i64,
+                    member_name
+                ],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn replace_windows(conn: &Connection, table: &str, windows: &[AvailabilityWindow]) -> Result<()> {
+    let table_name = match table {
+        "study_windows" => "study_windows",
+        "blocked_intervals" => "blocked_intervals",
+        _ => anyhow::bail!("unsupported window table: {table}"),
+    };
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(&format!("delete from {table_name}"), [])?;
+    for window in windows {
+        tx.execute(
+            &format!(
+                "insert into {table_name} (
+                    id, kind, day_of_week, date, start_minute, end_minute, label
+                 )
+                 values (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+            ),
+            params![
+                window.id,
+                window.kind.as_str(),
+                window.day_of_week,
+                window.date.map(|date| date.to_string()),
+                window.start_minute,
+                window.end_minute,
+                window.label
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn replace_capacity_overrides(conn: &Connection, overrides: &[CapacityOverride]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("delete from capacity_overrides", [])?;
+    for override_value in overrides {
+        tx.execute(
+            "insert into capacity_overrides (id, date, daily_cap_minutes, topic_cap)
+             values (?1, ?2, ?3, ?4)",
+            params![
+                override_value.id,
+                override_value.date.to_string(),
+                override_value.daily_cap_minutes,
+                override_value.topic_cap
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn topic_elo(conn: &Connection, topic_id: &str) -> Result<f64> {
+    conn.query_row("select elo from topics where id = ?1", [topic_id], |row| {
+        row.get(0)
+    })
+    .optional()?
+    .with_context(|| format!("topic not found: {topic_id}"))
+}
+
+fn get_schedule_run(conn: &Connection, run_id: &str) -> Result<Option<PersistedScheduleRun>> {
+    let run = conn
+        .query_row(
+            "select id, status, name, start_date, end_date, pinned, feasibility_json
+             from schedule_runs
+             where id = ?1",
+            [run_id],
+            |row| {
+                let start_date: String = row.get(3)?;
+                let end_date: String = row.get(4)?;
+                let issues_json: String = row.get(6)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    ScheduleRunStatus::from_str(row.get::<_, String>(1)?.as_str()),
+                    row.get::<_, Option<String>>(2)?,
+                    NaiveDate::parse_from_str(&start_date, "%Y-%m-%d")
+                        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
+                    NaiveDate::parse_from_str(&end_date, "%Y-%m-%d")
+                        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
+                    row.get::<_, i64>(5)? != 0,
+                    issues_json,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((id, status, name, start_date, end_date, pinned, issues_json)) = run else {
+        return Ok(None);
+    };
+    let issues = serde_json::from_str(&issues_json).context("failed to parse schedule issues")?;
+    let sessions = list_sessions_for_run(conn, &id)?;
+    Ok(Some(PersistedScheduleRun {
+        id,
+        status,
+        name,
+        start_date,
+        end_date,
+        pinned,
+        issues,
+        sessions,
+    }))
+}
+
+fn list_sessions_for_run(conn: &Connection, run_id: &str) -> Result<Vec<PersistedSession>> {
+    let mut stmt = conn.prepare(
+        "select s.id, s.run_id, s.topic_id, t.name, s.focus_name, s.date, s.start_minute,
+                s.end_minute, s.status, s.locked, s.explanation_json
+         from sessions s
+         join topics t on t.id = s.topic_id
+         where s.run_id = ?1
+         order by s.date, s.start_minute",
+    )?;
+    let rows = stmt.query_map([run_id], persisted_session_from_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to load sessions for schedule")
+}
+
+fn get_session(conn: &Connection, session_id: &str) -> Result<Option<PersistedSession>> {
+    conn.query_row(
+        "select s.id, s.run_id, s.topic_id, t.name, s.focus_name, s.date, s.start_minute,
+                s.end_minute, s.status, s.locked, s.explanation_json
+         from sessions s
+         join topics t on t.id = s.topic_id
+         where s.id = ?1",
+        [session_id],
+        persisted_session_from_row,
+    )
+    .optional()
+    .context("failed to load session")
+}
+
+fn persisted_session_from_row(row: &Row<'_>) -> rusqlite::Result<PersistedSession> {
+    let date_text: String = row.get(5)?;
+    let explanation_json: String = row.get(10)?;
+    let explanation: SessionExplanation = serde_json::from_str(&explanation_json)
+        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+    Ok(PersistedSession {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        topic_id: row.get(2)?,
+        topic_name: row.get(3)?,
+        focus_name: row.get(4)?,
+        date: NaiveDate::parse_from_str(&date_text, "%Y-%m-%d")
+            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?,
+        start_minute: row.get(6)?,
+        end_minute: row.get(7)?,
+        status: SessionStatus::from_str(row.get::<_, String>(8)?.as_str()),
+        locked: row.get::<_, i64>(9)? != 0,
+        explanation,
+    })
+}
+
+fn bool_to_int(value: bool) -> i64 {
+    if value { 1 } else { 0 }
 }
 
 fn seed_settings(conn: &Connection) -> Result<()> {
