@@ -549,6 +549,10 @@ fn iso_week_key(date: NaiveDate) -> (i32, u32) {
 mod tests {
     use super::*;
 
+    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(year, month, day).unwrap()
+    }
+
     fn topic(id: &str, name: &str, target_minutes: i64, deadline: Option<NaiveDate>) -> Topic {
         Topic {
             id: id.to_string(),
@@ -562,6 +566,25 @@ mod tests {
             core_weekly_sessions: 0,
             archived: false,
             active_focus_index: 0,
+        }
+    }
+
+    fn settings_with_weights(priority_weights: PriorityWeights) -> AppSettings {
+        AppSettings {
+            default_daily_topic_cap: 1,
+            priority_weights,
+            ..AppSettings::default()
+        }
+    }
+
+    fn only_weight(factor: &str) -> PriorityWeights {
+        PriorityWeights {
+            preference: if factor == "preference" { 1.0 } else { 0.0 },
+            urgency: if factor == "urgency" { 1.0 } else { 0.0 },
+            remaining: if factor == "remaining" { 1.0 } else { 0.0 },
+            core: if factor == "core" { 1.0 } else { 0.0 },
+            neglect: if factor == "neglect" { 1.0 } else { 0.0 },
+            pace: if factor == "pace" { 1.0 } else { 0.0 },
         }
     }
 
@@ -596,13 +619,9 @@ mod tests {
     #[test]
     fn subtracts_blocked_time_from_study_windows() {
         let free = free_windows_for_date(
-            NaiveDate::from_ymd_opt(2026, 6, 29).unwrap(),
+            date(2026, 6, 29),
             &[recurring_window(1, 9 * 60, 12 * 60)],
-            &[one_off_block(
-                NaiveDate::from_ymd_opt(2026, 6, 29).unwrap(),
-                10 * 60,
-                11 * 60,
-            )],
+            &[one_off_block(date(2026, 6, 29), 10 * 60, 11 * 60)],
             15,
         );
 
@@ -622,10 +641,41 @@ mod tests {
     }
 
     #[test]
+    fn multiple_blocks_split_and_trim_free_windows_to_granularity() {
+        let free = free_windows_for_date(
+            date(2026, 6, 29),
+            &[recurring_window(1, 8 * 60 + 7, 11 * 60 + 53)],
+            &[
+                one_off_block(date(2026, 6, 29), 8 * 60 + 30, 9 * 60 + 5),
+                one_off_block(date(2026, 6, 29), 10 * 60 + 10, 10 * 60 + 40),
+            ],
+            15,
+        );
+
+        assert_eq!(
+            free,
+            vec![
+                MinuteWindow {
+                    start_minute: 8 * 60 + 15,
+                    end_minute: 8 * 60 + 30
+                },
+                MinuteWindow {
+                    start_minute: 9 * 60 + 15,
+                    end_minute: 10 * 60
+                },
+                MinuteWindow {
+                    start_minute: 10 * 60 + 45,
+                    end_minute: 11 * 60 + 45
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn missing_deadline_blocks_generation_for_active_target_topic() {
         let preview = plan_schedule(ScheduleInput {
-            start_date: NaiveDate::from_ymd_opt(2026, 6, 29).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+            start_date: date(2026, 6, 29),
+            end_date: date(2026, 7, 5),
             settings: AppSettings::default(),
             topics: vec![topic("linear", "Linear Algebra", 120, None)],
             study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
@@ -640,8 +690,36 @@ mod tests {
     }
 
     #[test]
+    fn archived_target_topics_do_not_block_generation_or_get_scheduled() {
+        let start = date(2026, 6, 29);
+        let mut archived = topic("archived", "Archived", 120, None);
+        archived.archived = true;
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings: AppSettings::default(),
+            topics: vec![topic("linear", "Linear Algebra", 45, Some(start)), archived],
+            study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::new(),
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert!(preview.can_generate);
+        assert_eq!(preview.sessions.len(), 1);
+        assert_eq!(preview.sessions[0].topic_id, "linear");
+        assert!(
+            preview
+                .issues
+                .iter()
+                .all(|issue| issue.topic_id.as_deref() != Some("archived"))
+        );
+    }
+
+    #[test]
     fn schedules_best_effort_sessions_inside_free_windows() {
-        let start = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+        let start = date(2026, 6, 29);
         let mut settings = AppSettings::default();
         settings.default_daily_topic_cap = 2;
 
@@ -669,7 +747,7 @@ mod tests {
 
     #[test]
     fn daily_cap_limits_allocated_minutes() {
-        let start = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+        let start = date(2026, 6, 29);
         let mut settings = AppSettings::default();
         settings.default_daily_topic_cap = 3;
         settings.default_daily_cap_minutes = Some(45);
@@ -698,8 +776,118 @@ mod tests {
     }
 
     #[test]
+    fn capacity_override_can_raise_topic_cap_for_a_date() {
+        let start = date(2026, 6, 29);
+        let mut settings = AppSettings::default();
+        settings.default_daily_topic_cap = 1;
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings,
+            topics: vec![
+                topic("linear", "Linear Algebra", 45, Some(start)),
+                topic("cuda", "CUDA C++", 45, Some(start)),
+            ],
+            study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: vec![CapacityOverride {
+                id: "override".to_string(),
+                date: start,
+                daily_cap_minutes: None,
+                topic_cap: Some(2),
+            }],
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert_eq!(preview.sessions.len(), 2);
+    }
+
+    #[test]
+    fn capacity_override_can_reduce_daily_minutes_for_a_date() {
+        let start = date(2026, 6, 29);
+        let mut settings = AppSettings::default();
+        settings.default_daily_topic_cap = 3;
+        settings.default_daily_cap_minutes = Some(3 * 60);
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings,
+            topics: vec![
+                topic("linear", "Linear Algebra", 45, Some(start)),
+                topic("cuda", "CUDA C++", 45, Some(start)),
+            ],
+            study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: vec![CapacityOverride {
+                id: "override".to_string(),
+                date: start,
+                daily_cap_minutes: Some(45),
+                topic_cap: Some(2),
+            }],
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert_eq!(preview.sessions.len(), 1);
+        assert_eq!(
+            preview.sessions[0].end_minute - preview.sessions[0].start_minute,
+            45
+        );
+    }
+
+    #[test]
+    fn min_session_length_rounds_up_to_granularity() {
+        let start = date(2026, 6, 29);
+        let mut rounded = topic("signals", "Signal Processing", 60, Some(start));
+        rounded.min_session_minutes = 50;
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings: AppSettings::default(),
+            topics: vec![rounded],
+            study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::new(),
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert_eq!(preview.sessions.len(), 1);
+        assert_eq!(
+            preview.sessions[0].end_minute - preview.sessions[0].start_minute,
+            60
+        );
+    }
+
+    #[test]
+    fn no_available_windows_produces_unmet_target_warning() {
+        let start = date(2026, 6, 29);
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings: AppSettings::default(),
+            topics: vec![topic("linear", "Linear Algebra", 45, Some(start))],
+            study_windows: Vec::new(),
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::new(),
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert!(preview.can_generate);
+        assert!(preview.sessions.is_empty());
+        assert!(
+            preview
+                .issues
+                .iter()
+                .any(|issue| issue.code == "unmet_target_hours")
+        );
+    }
+
+    #[test]
     fn core_weekly_sessions_can_schedule_without_target_hours() {
-        let start = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+        let start = date(2026, 6, 29);
         let mut core_topic = topic("os", "Operating Systems", 0, None);
         core_topic.core_weekly_sessions = 1;
 
@@ -720,8 +908,158 @@ mod tests {
     }
 
     #[test]
+    fn core_weight_prioritizes_weekly_minimum_before_target_work() {
+        let start = date(2026, 6, 29);
+        let mut core_topic = topic("os", "Operating Systems", 0, None);
+        core_topic.core_weekly_sessions = 1;
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings: settings_with_weights(only_weight("core")),
+            topics: vec![
+                topic("linear", "Linear Algebra", 45, Some(start)),
+                core_topic,
+            ],
+            study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::new(),
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert_eq!(preview.sessions.len(), 1);
+        assert_eq!(preview.sessions[0].topic_id, "os");
+        assert_eq!(preview.sessions[0].explanation.factors.core, 1.0);
+    }
+
+    #[test]
+    fn preference_weight_prioritizes_higher_elo_topic() {
+        let start = date(2026, 6, 29);
+        let mut high = topic("cuda", "CUDA C++", 45, Some(start));
+        high.elo = 1300.0;
+        let mut low = topic("linear", "Linear Algebra", 45, Some(start));
+        low.elo = 900.0;
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings: settings_with_weights(only_weight("preference")),
+            topics: vec![low, high],
+            study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::new(),
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert_eq!(preview.sessions.len(), 1);
+        assert_eq!(preview.sessions[0].topic_id, "cuda");
+        assert_eq!(preview.sessions[0].explanation.factors.preference, 1.0);
+    }
+
+    #[test]
+    fn urgency_weight_prioritizes_nearest_deadline() {
+        let start = date(2026, 6, 29);
+        let later = start.checked_add_days(Days::new(30)).unwrap();
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings: settings_with_weights(only_weight("urgency")),
+            topics: vec![
+                topic("later", "Later", 45, Some(later)),
+                topic("today", "Today", 45, Some(start)),
+            ],
+            study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::new(),
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert_eq!(preview.sessions.len(), 1);
+        assert_eq!(preview.sessions[0].topic_id, "today");
+        assert_eq!(preview.sessions[0].explanation.factors.urgency, 1.0);
+    }
+
+    #[test]
+    fn remaining_weight_prioritizes_largest_remaining_target() {
+        let start = date(2026, 6, 29);
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings: settings_with_weights(only_weight("remaining")),
+            topics: vec![
+                topic("small", "Small", 45, Some(start)),
+                topic("large", "Large", 180, Some(start)),
+            ],
+            study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::new(),
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert_eq!(preview.sessions.len(), 1);
+        assert_eq!(preview.sessions[0].topic_id, "large");
+        assert_eq!(preview.sessions[0].explanation.factors.remaining, 1.0);
+    }
+
+    #[test]
+    fn neglect_weight_prioritizes_longest_unstudied_topic() {
+        let start = date(2026, 6, 29);
+        let neglected = start.checked_sub_days(Days::new(30)).unwrap();
+        let recent = start.checked_sub_days(Days::new(1)).unwrap();
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings: settings_with_weights(only_weight("neglect")),
+            topics: vec![
+                topic("recent", "Recent", 45, Some(start)),
+                topic("neglected", "Neglected", 45, Some(start)),
+            ],
+            study_windows: vec![recurring_window(1, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::new(),
+            last_studied_dates: HashMap::from([
+                ("recent".to_string(), recent),
+                ("neglected".to_string(), neglected),
+            ]),
+        });
+
+        assert_eq!(preview.sessions.len(), 1);
+        assert_eq!(preview.sessions[0].topic_id, "neglected");
+        assert_eq!(preview.sessions[0].explanation.factors.neglect, 1.0);
+    }
+
+    #[test]
+    fn pace_weight_prioritizes_topic_that_is_furthest_behind() {
+        let start = date(2026, 6, 29);
+        let current = start.checked_add_days(Days::new(5)).unwrap();
+        let deadline = start.checked_add_days(Days::new(10)).unwrap();
+        let mut behind = topic("behind", "Behind", 600, Some(deadline));
+        behind.completed_minutes = 0;
+        let mut on_track = topic("track", "On Track", 600, Some(deadline));
+        on_track.completed_minutes = 300;
+
+        let preview = plan_schedule(ScheduleInput {
+            start_date: start,
+            end_date: current,
+            settings: settings_with_weights(only_weight("pace")),
+            topics: vec![on_track, behind],
+            study_windows: vec![recurring_window(6, 9 * 60, 12 * 60)],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::new(),
+            last_studied_dates: HashMap::new(),
+        });
+
+        assert_eq!(preview.sessions.len(), 1);
+        assert_eq!(preview.sessions[0].topic_id, "behind");
+        assert!(preview.sessions[0].explanation.factors.pace > 0.0);
+    }
+
+    #[test]
     fn tuple_focus_rotates_by_scheduled_occurrence() {
-        let start = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+        let start = date(2026, 6, 29);
         let mut settings = AppSettings::default();
         settings.default_daily_topic_cap = 1;
         let mut tuple = topic("os-linux", "Operating Systems / Linux", 90, Some(start));

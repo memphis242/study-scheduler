@@ -805,6 +805,46 @@ create table if not exists priority_comparisons (
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scheduler::{ScheduledSession, ScoreBreakdown};
+
+    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(year, month, day).unwrap()
+    }
+
+    fn explanation() -> SessionExplanation {
+        SessionExplanation {
+            score: 0.75,
+            factors: ScoreBreakdown {
+                preference: 1.0,
+                urgency: 0.5,
+                remaining: 0.25,
+                core: 0.0,
+                neglect: 0.0,
+                pace: 0.0,
+            },
+            reason: "Test session".to_string(),
+        }
+    }
+
+    fn preview_for(topic_id: &str, date: NaiveDate, start_minute: i64) -> SchedulePreview {
+        SchedulePreview {
+            can_generate: true,
+            start_date: date,
+            end_date: date,
+            sessions: vec![ScheduledSession {
+                id: Uuid::new_v4().to_string(),
+                topic_id: topic_id.to_string(),
+                topic_name: "Stored topic name is joined from topics".to_string(),
+                focus_name: "Focus".to_string(),
+                date,
+                start_minute,
+                end_minute: start_minute + 45,
+                locked: false,
+                explanation: explanation(),
+            }],
+            issues: Vec::new(),
+        }
+    }
 
     #[test]
     fn seeds_initial_topics_once() {
@@ -855,5 +895,216 @@ mod tests {
         assert_eq!(settings.week_start, "monday");
         assert_eq!(settings.planning_horizon_mode, "until_deadlines");
         assert_eq!(settings.priority_weights.preference, 0.25);
+    }
+
+    #[test]
+    fn save_bootstrap_round_trips_settings_topics_windows_and_overrides() {
+        let conn = open_memory_database().expect("database initializes");
+        let mut bootstrap = load_bootstrap(&conn).expect("bootstrap loads");
+        let override_date = date(2026, 7, 1);
+
+        bootstrap.settings.default_daily_topic_cap = 4;
+        bootstrap.settings.default_daily_cap_minutes = Some(180);
+        bootstrap.topics[0].name = "Operating Systems tuple".to_string();
+        bootstrap.topics[0].members = vec!["Scheduling".to_string(), "Memory".to_string()];
+        bootstrap.topics[0].target_minutes = 240;
+        bootstrap.topics[0].deadline = Some(date(2026, 8, 15));
+        bootstrap.study_windows = vec![AvailabilityWindow {
+            id: "study-window".to_string(),
+            kind: WindowKind::Recurring,
+            day_of_week: Some(3),
+            date: None,
+            start_minute: 18 * 60,
+            end_minute: 20 * 60,
+            label: "Evening".to_string(),
+        }];
+        bootstrap.blocked_intervals = vec![AvailabilityWindow {
+            id: "blocked-window".to_string(),
+            kind: WindowKind::OneOff,
+            day_of_week: None,
+            date: Some(override_date),
+            start_minute: 19 * 60,
+            end_minute: 20 * 60,
+            label: "Dinner".to_string(),
+        }];
+        bootstrap.capacity_overrides = vec![CapacityOverride {
+            id: "capacity".to_string(),
+            date: override_date,
+            daily_cap_minutes: Some(90),
+            topic_cap: Some(2),
+        }];
+
+        let saved = save_bootstrap(&conn, &bootstrap).expect("bootstrap saves");
+        let first_topic = &saved.topics[0];
+
+        assert_eq!(saved.settings.default_daily_topic_cap, 4);
+        assert_eq!(saved.settings.default_daily_cap_minutes, Some(180));
+        assert_eq!(first_topic.name, "Operating Systems tuple");
+        assert_eq!(first_topic.members, vec!["Scheduling", "Memory"]);
+        assert_eq!(first_topic.target_minutes, 240);
+        assert_eq!(first_topic.deadline, Some(date(2026, 8, 15)));
+        assert_eq!(saved.study_windows, bootstrap.study_windows);
+        assert_eq!(saved.blocked_intervals, bootstrap.blocked_intervals);
+        assert_eq!(saved.capacity_overrides, bootstrap.capacity_overrides);
+    }
+
+    #[test]
+    fn priority_comparison_updates_topics_and_records_history() {
+        let conn = open_memory_database().expect("database initializes");
+        let topics = list_topics(&conn).expect("topics load");
+        let winner = &topics[0];
+        let loser = &topics[5];
+
+        let update = apply_priority_comparison(&conn, &winner.id, &loser.id, 24.0)
+            .expect("comparison applies");
+        let topics_after = list_topics(&conn).expect("topics reload");
+        let winner_after = topics_after
+            .iter()
+            .find(|topic| topic.id == winner.id)
+            .unwrap();
+        let loser_after = topics_after
+            .iter()
+            .find(|topic| topic.id == loser.id)
+            .unwrap();
+        let comparison_count: i64 = conn
+            .query_row("select count(*) from priority_comparisons", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(comparison_count, 1);
+        assert_eq!(winner_after.elo, update.winner_after);
+        assert_eq!(loser_after.elo, update.loser_after);
+        assert!(winner_after.elo > winner.elo);
+        assert!(loser_after.elo < loser.elo);
+    }
+
+    #[test]
+    fn save_current_schedule_keeps_only_one_unpinned_previous() {
+        let conn = open_memory_database().expect("database initializes");
+        let topic_id = list_topics(&conn).expect("topics load")[0].id.clone();
+        let first_date = date(2026, 6, 29);
+
+        save_current_schedule(&conn, &preview_for(&topic_id, first_date, 9 * 60))
+            .expect("first schedule saves");
+        save_current_schedule(
+            &conn,
+            &preview_for(
+                &topic_id,
+                first_date.checked_add_days(chrono::Days::new(1)).unwrap(),
+                10 * 60,
+            ),
+        )
+        .expect("second schedule saves");
+        save_current_schedule(
+            &conn,
+            &preview_for(
+                &topic_id,
+                first_date.checked_add_days(chrono::Days::new(2)).unwrap(),
+                11 * 60,
+            ),
+        )
+        .expect("third schedule saves");
+
+        let previous_count: i64 = conn
+            .query_row(
+                "select count(*) from schedule_runs where status = 'previous'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let current = get_schedule_by_status(&conn, ScheduleRunStatus::Current)
+            .expect("current loads")
+            .expect("current exists");
+        let previous = get_schedule_by_status(&conn, ScheduleRunStatus::Previous)
+            .expect("previous loads")
+            .expect("previous exists");
+
+        assert_eq!(previous_count, 1);
+        assert_eq!(current.start_date, date(2026, 7, 1));
+        assert_eq!(previous.start_date, date(2026, 6, 30));
+    }
+
+    #[test]
+    fn pin_schedule_reference_moves_run_out_of_current_history() {
+        let conn = open_memory_database().expect("database initializes");
+        let topic_id = list_topics(&conn).expect("topics load")[0].id.clone();
+        let saved =
+            save_current_schedule(&conn, &preview_for(&topic_id, date(2026, 6, 29), 9 * 60))
+                .expect("schedule saves");
+
+        pin_schedule_reference(&conn, &saved.id, Some("Baseline")).expect("schedule pins");
+
+        let current = get_schedule_by_status(&conn, ScheduleRunStatus::Current).unwrap();
+        let references = list_reference_schedules(&conn).expect("references load");
+        assert!(current.is_none());
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].name.as_deref(), Some("Baseline"));
+        assert!(references[0].pinned);
+    }
+
+    #[test]
+    fn update_session_moves_time_and_sets_locked_status() {
+        let conn = open_memory_database().expect("database initializes");
+        let topic_id = list_topics(&conn).expect("topics load")[0].id.clone();
+        let run = save_current_schedule(&conn, &preview_for(&topic_id, date(2026, 6, 29), 9 * 60))
+            .expect("schedule saves");
+        let session_id = run.sessions[0].id.clone();
+
+        let updated = update_session(
+            &conn,
+            &session_id,
+            date(2026, 6, 30),
+            12 * 60,
+            13 * 60,
+            true,
+            SessionStatus::Locked,
+        )
+        .expect("session updates");
+
+        assert_eq!(updated.date, date(2026, 6, 30));
+        assert_eq!(updated.start_minute, 12 * 60);
+        assert_eq!(updated.end_minute, 13 * 60);
+        assert!(updated.locked);
+        assert_eq!(updated.status, SessionStatus::Locked);
+    }
+
+    #[test]
+    fn log_session_updates_progress_status_and_last_studied_date() {
+        let conn = open_memory_database().expect("database initializes");
+        let topic_id = list_topics(&conn).expect("topics load")[0].id.clone();
+        let study_date = date(2026, 6, 29);
+        let run = save_current_schedule(&conn, &preview_for(&topic_id, study_date, 9 * 60))
+            .expect("schedule saves");
+        let session_id = run.sessions[0].id.clone();
+
+        log_session(
+            &conn,
+            Some(&session_id),
+            &topic_id,
+            study_date,
+            30,
+            "Focused review",
+            Some(SessionStatus::Partial),
+        )
+        .expect("session logs");
+
+        let updated_topic = list_topics(&conn)
+            .expect("topics reload")
+            .into_iter()
+            .find(|topic| topic.id == topic_id)
+            .unwrap();
+        let current = get_schedule_by_status(&conn, ScheduleRunStatus::Current)
+            .expect("current loads")
+            .unwrap();
+        let last_studied = last_studied_dates(&conn).expect("last studied loads");
+        let note: String = conn
+            .query_row("select note from study_logs limit 1", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(updated_topic.completed_minutes, 30);
+        assert_eq!(current.sessions[0].status, SessionStatus::Partial);
+        assert_eq!(last_studied.get(&topic_id), Some(&study_date));
+        assert_eq!(note, "Focused review");
     }
 }

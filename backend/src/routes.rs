@@ -492,6 +492,259 @@ mod tests {
         assert_eq!(snapshot.current_schedule.unwrap().sessions.len(), 1);
     }
 
+    #[tokio::test]
+    async fn settings_endpoint_updates_snapshot_defaults() {
+        let app = router(db::open_memory_database().expect("database"));
+        let mut snapshot = get_snapshot(app.clone()).await;
+        snapshot.bootstrap.settings.default_daily_topic_cap = 5;
+        snapshot.bootstrap.settings.default_daily_cap_minutes = Some(150);
+        snapshot.bootstrap.settings.priority_weights.neglect = 0.35;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&snapshot.bootstrap.settings).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: AppSnapshot = read_json(response).await;
+        assert_eq!(body.bootstrap.settings.default_daily_topic_cap, 5);
+        assert_eq!(body.bootstrap.settings.default_daily_cap_minutes, Some(150));
+        assert_eq!(body.bootstrap.settings.priority_weights.neglect, 0.35);
+    }
+
+    #[tokio::test]
+    async fn planner_simulation_returns_preview_without_persisting_schedule() {
+        let app = router(db::open_memory_database().expect("database"));
+        let start = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+        let input = ScheduleInput {
+            start_date: start,
+            end_date: start,
+            settings: AppSettings::default(),
+            topics: vec![test_topic("linear", "Linear Algebra", 45, start)],
+            study_windows: vec![AvailabilityWindow {
+                id: Uuid::new_v4().to_string(),
+                kind: WindowKind::Recurring,
+                day_of_week: Some(1),
+                date: None,
+                start_minute: 9 * 60,
+                end_minute: 12 * 60,
+                label: "Morning".to_string(),
+            }],
+            blocked_intervals: Vec::new(),
+            capacity_overrides: Vec::<CapacityOverride>::new(),
+            last_studied_dates: std::collections::HashMap::new(),
+        };
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/planner/simulate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&input).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let current_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/schedules/current")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let preview: SchedulePreview = read_json(response).await;
+        let current: Option<PersistedScheduleRun> = read_json(current_response).await;
+        assert_eq!(preview.sessions.len(), 1);
+        assert!(current.is_none());
+    }
+
+    #[tokio::test]
+    async fn pinning_current_schedule_lists_it_as_reference() {
+        let app = router(db::open_memory_database().expect("database"));
+        let mut snapshot = get_snapshot(app.clone()).await;
+        let start = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+        snapshot.bootstrap.settings.default_daily_topic_cap = 1;
+        snapshot.bootstrap.topics = vec![test_topic("linear", "Linear Algebra", 45, start)];
+        snapshot.bootstrap.study_windows = vec![AvailabilityWindow {
+            id: Uuid::new_v4().to_string(),
+            kind: WindowKind::Recurring,
+            day_of_week: Some(1),
+            date: None,
+            start_minute: 9 * 60,
+            end_minute: 12 * 60,
+            label: "Morning".to_string(),
+        }];
+        snapshot.bootstrap.blocked_intervals = Vec::new();
+        snapshot.bootstrap.capacity_overrides = Vec::<CapacityOverride>::new();
+        save_bootstrap(app.clone(), &snapshot.bootstrap).await;
+        generate(app.clone(), start).await;
+        let current = get_snapshot(app.clone()).await.current_schedule.unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/schedules/{}/pin", current.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&PinScheduleRequest {
+                            name: Some("Pinned baseline".to_string()),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let snapshot: AppSnapshot = read_json(response).await;
+        assert!(snapshot.current_schedule.is_none());
+        assert_eq!(snapshot.reference_schedules.len(), 1);
+        assert_eq!(
+            snapshot.reference_schedules[0].name.as_deref(),
+            Some("Pinned baseline")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_update_and_log_flow_updates_schedule_and_topic_progress() {
+        let app = router(db::open_memory_database().expect("database"));
+        let mut snapshot = get_snapshot(app.clone()).await;
+        let start = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+        snapshot.bootstrap.settings.default_daily_topic_cap = 1;
+        snapshot.bootstrap.topics = vec![test_topic("linear", "Linear Algebra", 90, start)];
+        snapshot.bootstrap.study_windows = vec![AvailabilityWindow {
+            id: Uuid::new_v4().to_string(),
+            kind: WindowKind::Recurring,
+            day_of_week: Some(1),
+            date: None,
+            start_minute: 9 * 60,
+            end_minute: 12 * 60,
+            label: "Morning".to_string(),
+        }];
+        snapshot.bootstrap.blocked_intervals = Vec::new();
+        snapshot.bootstrap.capacity_overrides = Vec::<CapacityOverride>::new();
+        save_bootstrap(app.clone(), &snapshot.bootstrap).await;
+        generate(app.clone(), start).await;
+        let snapshot = get_snapshot(app.clone()).await;
+        let session = snapshot.current_schedule.unwrap().sessions[0].clone();
+
+        let update_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/sessions/{}", session.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&SessionUpdateRequest {
+                            date: start,
+                            start_minute: 10 * 60,
+                            end_minute: 11 * 60,
+                            locked: true,
+                            status: SessionStatus::Locked,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(update_response.status(), StatusCode::OK);
+        let updated_session: crate::models::PersistedSession = read_json(update_response).await;
+        assert!(updated_session.locked);
+        assert_eq!(updated_session.status, SessionStatus::Locked);
+
+        let log_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{}/log", session.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&StudyLogRequest {
+                            topic_id: session.topic_id.clone(),
+                            date: start,
+                            minutes: 60,
+                            note: Some("Finished".to_string()),
+                            status: Some(SessionStatus::Complete),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(log_response.status(), StatusCode::OK);
+        let snapshot: AppSnapshot = read_json(log_response).await;
+        let topic = snapshot
+            .bootstrap
+            .topics
+            .iter()
+            .find(|topic| topic.id == session.topic_id)
+            .unwrap();
+        let logged_session = &snapshot.current_schedule.unwrap().sessions[0];
+        assert_eq!(topic.completed_minutes, 60);
+        assert_eq!(logged_session.status, SessionStatus::Complete);
+    }
+
+    #[tokio::test]
+    async fn manual_log_endpoint_updates_topic_progress_without_schedule() {
+        let app = router(db::open_memory_database().expect("database"));
+        let snapshot = get_snapshot(app.clone()).await;
+        let topic_id = snapshot.bootstrap.topics[0].id.clone();
+        let start = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/logs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&StudyLogRequest {
+                            topic_id: topic_id.clone(),
+                            date: start,
+                            minutes: 25,
+                            note: Some("Manual".to_string()),
+                            status: Some(SessionStatus::Manual),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let snapshot: AppSnapshot = read_json(response).await;
+        let topic = snapshot
+            .bootstrap
+            .topics
+            .iter()
+            .find(|topic| topic.id == topic_id)
+            .unwrap();
+        assert_eq!(topic.completed_minutes, 25);
+        assert!(snapshot.current_schedule.is_none());
+    }
+
     async fn get_snapshot(app: Router) -> AppSnapshot {
         let response = app
             .oneshot(
