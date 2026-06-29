@@ -43,6 +43,13 @@ cd frontend
 npm run build
 ```
 
+Frontend tests:
+
+```sh
+cd frontend
+npm test
+```
+
 ## Development Policy
 
 - Keep commits focused and feature-level, with each commit easy to understand and revert.
