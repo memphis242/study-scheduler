@@ -1,4 +1,4 @@
-use backend::{db::open_database, routes::router};
+use backend::{config::api_addr_from_env, db::open_database, routes::router};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -14,8 +14,9 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("STUDY_SCHEDULER_DB").unwrap_or_else(|_| "study-scheduler.db".to_string());
     let conn = open_database(path)?;
     let app = router(conn);
-    let listener = TcpListener::bind("127.0.0.1:5174").await?;
-    tracing::info!("Study Scheduler API listening on http://127.0.0.1:5174");
+    let api_addr = api_addr_from_env();
+    let listener = TcpListener::bind(&api_addr).await?;
+    tracing::info!("Study Scheduler API listening on http://{api_addr}");
     axum::serve(listener, app).await?;
     Ok(())
 }

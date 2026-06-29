@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: ./scripts/install-studytime [--install-dir DIR]
+
+Installs the studytime launcher by symlinking this checkout's bin/studytime
+into a directory on PATH. Defaults to ~/.local/bin.
+USAGE
+}
+
+die() {
+  printf 'install-studytime: %s\n' "$*" >&2
+  exit 1
+}
+
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+  script_dir="$(cd -P "$(dirname "$script_path")" >/dev/null 2>&1 && pwd)"
+  script_path="$(readlink "$script_path")"
+  [[ "$script_path" != /* ]] && script_path="$script_dir/$script_path"
+done
+
+script_dir="$(cd -P "$(dirname "$script_path")" >/dev/null 2>&1 && pwd)"
+repo_root="$(cd "$script_dir/.." >/dev/null 2>&1 && pwd)"
+launcher="$repo_root/bin/studytime"
+install_dir="${STUDYTIME_INSTALL_DIR:-$HOME/.local/bin}"
+
+while (($#)); do
+  case "$1" in
+    --install-dir)
+      shift
+      (($#)) || die "--install-dir requires a directory"
+      install_dir="$1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+[[ -f "$launcher" ]] || die "launcher not found at $launcher"
+
+mkdir -p "$install_dir"
+chmod +x "$launcher"
+ln -sfn "$launcher" "$install_dir/studytime"
+
+printf 'Installed studytime -> %s\n' "$launcher"
+
+case ":$PATH:" in
+  *":$install_dir:"*)
+    printf 'Run it with: studytime\n'
+    ;;
+  *)
+    printf 'Add %s to PATH, then run: studytime\n' "$install_dir"
+    ;;
+esac

@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: studytime [--no-open]
+
+Starts the Study Scheduler backend and frontend, waits until both are ready,
+and opens the GUI in your browser.
+
+Options:
+  --no-open     Start the services without launching a browser.
+  -h, --help    Show this help text.
+
+Environment:
+  STUDYTIME_API_PORT       Backend port. Defaults to 5174.
+  STUDYTIME_FRONTEND_PORT  Frontend port. Defaults to 5173.
+  STUDYTIME_DB             SQLite database path. Defaults to
+                           ~/.local/share/studytime/study-scheduler.db.
+  STUDYTIME_NO_OPEN        Set to 1 to skip browser launch.
+USAGE
+}
+
+die() {
+  printf 'studytime: %s\n' "$*" >&2
+  exit 1
+}
+
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+  script_dir="$(cd -P "$(dirname "$script_path")" >/dev/null 2>&1 && pwd)"
+  script_path="$(readlink "$script_path")"
+  [[ "$script_path" != /* ]] && script_path="$script_dir/$script_path"
+done
+
+script_dir="$(cd -P "$(dirname "$script_path")" >/dev/null 2>&1 && pwd)"
+repo_root="$(cd "$script_dir/.." >/dev/null 2>&1 && pwd)"
+backend_dir="$repo_root/backend"
+frontend_dir="$repo_root/frontend"
+
+[[ -d "$backend_dir" ]] || die "backend directory not found at $backend_dir"
+[[ -d "$frontend_dir" ]] || die "frontend directory not found at $frontend_dir"
+
+no_open=0
+case "${STUDYTIME_NO_OPEN:-0}" in
+  1|true|TRUE|yes|YES) no_open=1 ;;
+esac
+
+for arg in "$@"; do
+  case "$arg" in
+    --no-open)
+      no_open=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+command -v npm >/dev/null 2>&1 || die "npm is required but was not found in PATH"
+command -v curl >/dev/null 2>&1 || die "curl is required but was not found in PATH"
+
+if [[ -n "${CARGO:-}" ]]; then
+  cargo_bin="$CARGO"
+elif command -v cargo >/dev/null 2>&1; then
+  cargo_bin="$(command -v cargo)"
+elif [[ -x "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" ]]; then
+  cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
+else
+  die "cargo is required but was not found in PATH or ~/.cargo/bin"
+fi
+
+api_host="${STUDYTIME_API_HOST:-127.0.0.1}"
+api_port="${STUDYTIME_API_PORT:-5174}"
+frontend_host="${STUDYTIME_FRONTEND_HOST:-127.0.0.1}"
+frontend_port="${STUDYTIME_FRONTEND_PORT:-5173}"
+api_url="${STUDYTIME_API_URL:-http://$api_host:$api_port}"
+frontend_url="http://$frontend_host:$frontend_port"
+
+data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}"
+data_dir="${STUDYTIME_DATA_DIR:-$data_root/studytime}"
+log_dir="${STUDYTIME_LOG_DIR:-$state_root/studytime/logs}"
+db_path="${STUDYTIME_DB:-$data_dir/study-scheduler.db}"
+backend_log="$log_dir/backend.log"
+frontend_log="$log_dir/frontend.log"
+
+mkdir -p "$log_dir"
+if [[ "$db_path" != ":memory:" ]]; then
+  mkdir -p "$(dirname "$db_path")"
+fi
+
+backend_pid=""
+frontend_pid=""
+started_pids=()
+
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+
+  if [[ -n "$frontend_pid" ]] && kill -0 "$frontend_pid" >/dev/null 2>&1; then
+    kill "$frontend_pid" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$backend_pid" ]] && kill -0 "$backend_pid" >/dev/null 2>&1; then
+    kill "$backend_pid" >/dev/null 2>&1 || true
+  fi
+
+  [[ -n "$frontend_pid" ]] && wait "$frontend_pid" >/dev/null 2>&1 || true
+  [[ -n "$backend_pid" ]] && wait "$backend_pid" >/dev/null 2>&1 || true
+
+  exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+url_ready() {
+  local url="$1"
+  curl -fsS "$url" >/dev/null 2>&1
+}
+
+print_log_tail() {
+  local name="$1"
+  local log_file="$2"
+
+  printf '\n%s log tail (%s):\n' "$name" "$log_file" >&2
+  tail -n 40 "$log_file" >&2 || true
+}
+
+wait_for_url() {
+  local name="$1"
+  local url="$2"
+  local pid="${3:-}"
+  local log_file="${4:-}"
+
+  for ((attempt = 1; attempt <= 120; attempt += 1)); do
+    if url_ready "$url"; then
+      printf '%s ready at %s\n' "$name" "$url"
+      return 0
+    fi
+
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" >/dev/null 2>&1; then
+      [[ -n "$log_file" ]] && print_log_tail "$name" "$log_file"
+      return 1
+    fi
+
+    sleep 0.5
+  done
+
+  [[ -n "$log_file" ]] && print_log_tail "$name" "$log_file"
+  return 1
+}
+
+open_browser() {
+  if [[ "$no_open" == 1 ]]; then
+    printf 'Browser launch skipped. Open %s\n' "$frontend_url"
+    return 0
+  fi
+
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$frontend_url" >/dev/null 2>&1 && return 0
+  elif command -v open >/dev/null 2>&1; then
+    open "$frontend_url" >/dev/null 2>&1 && return 0
+  elif command -v gio >/dev/null 2>&1; then
+    gio open "$frontend_url" >/dev/null 2>&1 && return 0
+  fi
+
+  printf 'StudyTime is ready at %s\n' "$frontend_url"
+}
+
+ensure_frontend_deps() {
+  if [[ -d "$frontend_dir/node_modules" ]]; then
+    return 0
+  fi
+
+  printf 'Installing frontend dependencies...\n'
+  npm --prefix "$frontend_dir" ci
+}
+
+start_backend() {
+  : > "$backend_log"
+  printf 'Building backend if needed...\n'
+  if ! "$cargo_bin" build --manifest-path "$backend_dir/Cargo.toml" >>"$backend_log" 2>&1; then
+    print_log_tail "Backend" "$backend_log"
+    return 1
+  fi
+
+  printf 'Starting backend at %s...\n' "$api_url"
+  (
+    STUDY_SCHEDULER_DB="$db_path" \
+    STUDY_SCHEDULER_API_ADDR="$api_host:$api_port" \
+    "$backend_dir/target/debug/backend"
+  ) >>"$backend_log" 2>&1 &
+  backend_pid=$!
+  started_pids+=("$backend_pid")
+}
+
+start_frontend() {
+  : > "$frontend_log"
+  printf 'Starting frontend at %s...\n' "$frontend_url"
+  (
+    VITE_API_URL="$api_url" \
+    npm --prefix "$frontend_dir" run dev -- --host "$frontend_host" --port "$frontend_port" --strictPort
+  ) >>"$frontend_log" 2>&1 &
+  frontend_pid=$!
+  started_pids+=("$frontend_pid")
+}
+
+ensure_frontend_deps
+
+if url_ready "$api_url/api/health"; then
+  printf 'Backend already running at %s\n' "$api_url"
+else
+  start_backend || die "backend failed to start"
+  wait_for_url "Backend" "$api_url/api/health" "$backend_pid" "$backend_log" \
+    || die "backend did not become ready"
+fi
+
+if url_ready "$frontend_url"; then
+  printf 'Frontend already running at %s\n' "$frontend_url"
+else
+  start_frontend
+  wait_for_url "Frontend" "$frontend_url" "$frontend_pid" "$frontend_log" \
+    || die "frontend did not become ready"
+fi
+
+open_browser
+
+printf 'StudyTime is running. Database: %s\n' "$db_path"
+printf 'Logs: %s\n' "$log_dir"
+
+if ((${#started_pids[@]} == 0)); then
+  printf 'No new services were started because StudyTime was already running.\n'
+  exit 0
+fi
+
+printf 'Press Ctrl-C to stop services started by this launcher.\n'
+wait -n "${started_pids[@]}"
+exit $?

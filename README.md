@@ -11,6 +11,22 @@ Localhost-only study planning app with a Rust API, SQLite persistence, and a Rea
 
 ## Run Locally
 
+Install the `studytime` command on this host:
+
+```sh
+./scripts/install-studytime
+```
+
+Then launch the app from any directory:
+
+```sh
+studytime
+```
+
+The command starts the backend and frontend, waits for both to become ready, and opens the GUI. It stores the default SQLite database at `~/.local/share/studytime/study-scheduler.db`; set `STUDYTIME_DB` to override it. Use `studytime --no-open` for a terminal-only launch.
+
+Manual development commands are still available:
+
 Backend:
 
 ```sh
