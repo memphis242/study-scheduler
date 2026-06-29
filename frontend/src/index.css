@@ -1,8 +1,9 @@
 @import "tailwindcss";
 
 :root {
-  color: #0f172a;
-  background: #f8fafc;
+  color: #e2e8f0;
+  background: #020617;
+  color-scheme: dark;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -18,6 +19,7 @@
 
 body {
   margin: 0;
+  background: #020617;
 }
 
 button,
@@ -27,31 +29,31 @@ select {
 }
 
 .nav-button {
-  @apply flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-950;
+  @apply flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-50;
 }
 
 .nav-button-active {
-  @apply bg-teal-50 text-teal-800;
+  @apply bg-teal-500/15 text-teal-200;
 }
 
 .primary-button {
-  @apply inline-flex items-center justify-center gap-2 rounded-md bg-teal-700 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300;
+  @apply inline-flex items-center justify-center gap-2 rounded-md bg-teal-500 px-3 py-2 text-sm font-medium text-slate-950 shadow-sm hover:bg-teal-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400;
 }
 
 .secondary-button {
-  @apply inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400;
+  @apply inline-flex items-center justify-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-200 shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:text-slate-600;
 }
 
 .small-button {
-  @apply rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50;
+  @apply rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800;
 }
 
 .icon-button {
-  @apply inline-flex h-10 w-10 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-600 hover:bg-slate-50;
+  @apply inline-flex h-10 w-10 items-center justify-center rounded-md border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800;
 }
 
 .panel {
-  @apply rounded-md border border-slate-200 bg-slate-50 p-4 shadow-sm;
+  @apply rounded-md border border-slate-800 bg-slate-900 p-4 shadow-sm shadow-black/20;
 }
 
 .section-header {
@@ -59,23 +61,28 @@ select {
 }
 
 .section-header h2 {
-  @apply text-base font-semibold text-slate-950;
+  @apply text-base font-semibold text-slate-100;
 }
 
 .section-header p {
-  @apply mt-1 text-sm text-slate-500;
+  @apply mt-1 text-sm text-slate-400;
 }
 
 .label {
-  @apply grid gap-1.5 text-xs font-medium text-slate-500;
+  @apply grid gap-1.5 text-xs font-medium text-slate-400;
 }
 
 .field {
-  @apply h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 shadow-sm outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100 disabled:bg-slate-100 disabled:text-slate-500;
+  @apply h-10 rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 shadow-sm outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-500/20 disabled:bg-slate-900 disabled:text-slate-500;
 }
 
 .table-field {
-  @apply h-9 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100;
+  @apply h-9 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-500/20;
+}
+
+.field,
+.table-field {
+  color-scheme: dark;
 }
 
 .data-table {
@@ -83,33 +90,55 @@ select {
 }
 
 .data-table th {
-  @apply border-b border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-normal text-slate-500;
+  @apply border-b border-slate-800 bg-slate-950 px-3 py-2 text-xs font-semibold uppercase tracking-normal text-slate-400;
 }
 
 .data-table td {
-  @apply border-b border-slate-200 px-3 py-2 align-middle;
+  @apply border-b border-slate-800 px-3 py-2 align-middle;
 }
 
 .session-row {
-  @apply flex items-center justify-between gap-4 rounded border border-slate-200 bg-white px-3 py-2;
+  @apply flex items-center justify-between gap-4 rounded border border-slate-800 bg-slate-950 px-3 py-2;
 }
 
 .choice-button {
-  @apply flex min-h-44 flex-col justify-center rounded-md border border-slate-200 bg-white p-5 text-left shadow-sm hover:border-teal-500 hover:bg-teal-50;
+  @apply flex min-h-44 flex-col justify-center rounded-md border border-slate-800 bg-slate-950 p-5 text-left shadow-sm shadow-black/20 hover:border-teal-400 hover:bg-teal-500/10;
 }
 
 .calendar-shell {
-  @apply rounded-md border border-slate-200 bg-white p-3;
+  @apply rounded-md border border-slate-800 bg-slate-950 p-3;
 }
 
 .fc {
-  --fc-border-color: #e2e8f0;
-  --fc-today-bg-color: #f0fdfa;
-  --fc-button-bg-color: #0f766e;
-  --fc-button-border-color: #0f766e;
-  --fc-button-hover-bg-color: #115e59;
-  --fc-button-hover-border-color: #115e59;
-  --fc-button-active-bg-color: #134e4a;
-  --fc-button-active-border-color: #134e4a;
+  --fc-border-color: #334155;
+  --fc-page-bg-color: #020617;
+  --fc-neutral-bg-color: #0f172a;
+  --fc-list-event-hover-bg-color: #1e293b;
+  --fc-today-bg-color: rgb(20 184 166 / 0.12);
+  --fc-button-bg-color: #14b8a6;
+  --fc-button-border-color: #14b8a6;
+  --fc-button-text-color: #020617;
+  --fc-button-hover-bg-color: #2dd4bf;
+  --fc-button-hover-border-color: #2dd4bf;
+  --fc-button-active-bg-color: #0f766e;
+  --fc-button-active-border-color: #0f766e;
   font-size: 0.875rem;
+  color: #cbd5e1;
+}
+
+.fc .fc-toolbar-title,
+.fc .fc-col-header-cell-cushion,
+.fc .fc-daygrid-day-number {
+  color: #e2e8f0;
+}
+
+.fc .fc-timegrid-slot-label,
+.fc .fc-timegrid-axis-cushion {
+  color: #94a3b8;
+}
+
+.fc .fc-button:disabled {
+  background: #334155;
+  border-color: #334155;
+  color: #94a3b8;
 }

@@ -166,21 +166,21 @@ function App() {
 
   if (loading && !snapshot) {
     return (
-      <main className="min-h-screen bg-slate-50 text-slate-950">
+      <main className="min-h-screen bg-slate-950 text-slate-100">
         <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-6">
-          <div className="text-sm font-medium text-slate-600">Loading scheduler...</div>
+          <div className="text-sm font-medium text-slate-300">Loading scheduler...</div>
         </div>
       </main>
     )
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-950">
+    <main className="min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen max-w-[1440px]">
-        <aside className="hidden w-64 shrink-0 border-r border-slate-200 bg-white px-4 py-5 lg:block">
+        <aside className="hidden w-64 shrink-0 border-r border-slate-800 bg-slate-950 px-4 py-5 lg:block">
           <div className="px-2">
             <div className="text-lg font-semibold">Study Scheduler</div>
-            <div className="mt-1 text-xs text-slate-500">Local planning workspace</div>
+            <div className="mt-1 text-xs text-slate-400">Local planning workspace</div>
           </div>
           <nav className="mt-6 grid gap-1">
             {views.map((item) => (
@@ -198,11 +198,11 @@ function App() {
         </aside>
 
         <section className="min-w-0 flex-1">
-          <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur lg:px-8">
+          <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/95 px-4 py-3 backdrop-blur lg:px-8">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h1 className="text-xl font-semibold">{titleForView(view)}</h1>
-                <p className="text-sm text-slate-500">
+                <p className="text-sm text-slate-400">
                   {snapshot?.currentSchedule
                     ? `Current plan: ${snapshot.currentSchedule.startDate} to ${snapshot.currentSchedule.endDate}`
                     : 'No generated plan yet'}
@@ -230,7 +230,7 @@ function App() {
                 </button>
               </div>
             </div>
-            {error ? <div className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+            {error ? <div className="mt-3 rounded border border-red-900/70 bg-red-950 px-3 py-2 text-sm text-red-200">{error}</div> : null}
           </header>
 
           <div className="px-4 py-5 lg:px-8">
@@ -688,7 +688,7 @@ function CalendarView({
             startTime: minutesToClock(block.startMinute),
             endTime: minutesToClock(block.endMinute),
             display: 'background',
-            backgroundColor: '#fecaca',
+            backgroundColor: 'rgb(127 29 29 / 0.45)',
             editable: false,
           }
         : {
@@ -697,7 +697,7 @@ function CalendarView({
             start: `${block.date}T${minutesToClock(block.startMinute)}:00`,
             end: `${block.date}T${minutesToClock(block.endMinute)}:00`,
             display: 'background',
-            backgroundColor: '#fecaca',
+            backgroundColor: 'rgb(127 29 29 / 0.45)',
             editable: false,
           },
     )
@@ -818,7 +818,7 @@ function PriorityView({
                 onClick={() => onChoose(topic, loser)}
               >
                 <span className="text-lg font-semibold">{topic.name}</span>
-                <span className="mt-2 text-sm text-slate-500">
+                <span className="mt-2 text-sm text-slate-400">
                   Elo {Math.round(topic.elo)} · {formatHours(Math.max(0, topic.targetMinutes - topic.completedMinutes))} remaining
                 </span>
               </button>
@@ -837,9 +837,9 @@ function PriorityView({
           {[...topics]
             .sort((a, b) => b.elo - a.elo)
             .map((topic, index) => (
-              <li key={topic.id} className="flex items-center justify-between rounded border border-slate-200 bg-white px-3 py-2 text-sm">
+              <li key={topic.id} className="flex items-center justify-between rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm">
                 <span>{index + 1}. {topic.name}</span>
-                <span className="font-mono text-slate-500">{Math.round(topic.elo)}</span>
+                <span className="font-mono text-slate-400">{Math.round(topic.elo)}</span>
               </li>
             ))}
         </ol>
@@ -920,7 +920,7 @@ function PlannerView({
             <IssueList issues={preview.issues} />
             <div className="grid gap-2">
               {preview.sessions.slice(0, 12).map((session) => (
-                <div key={session.id} className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
+                <div key={session.id} className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm">
                   {session.date} · {minutesToClock(session.startMinute)}-{minutesToClock(session.endMinute)} · {session.focusName}
                 </div>
               ))}
@@ -968,7 +968,7 @@ function TrackingView({
             <div key={session.id} className="session-row">
               <div>
                 <div className="font-medium">{session.focusName}</div>
-                <div className="text-xs text-slate-500">
+                <div className="text-xs text-slate-400">
                   {session.date} · {minutesToClock(session.startMinute)}-{minutesToClock(session.endMinute)}
                 </div>
               </div>
@@ -1080,7 +1080,7 @@ function WindowEditor({
       <div className="mt-4 grid gap-3">
         {windows.length === 0 ? <EmptyState text="No intervals configured." /> : null}
         {windows.map((window) => (
-          <div key={window.id} className="grid gap-3 rounded border border-slate-200 bg-white p-3 md:grid-cols-[1fr_1fr_1fr_1fr_auto]">
+          <div key={window.id} className="grid gap-3 rounded border border-slate-800 bg-slate-950 p-3 md:grid-cols-[1fr_1fr_1fr_1fr_auto]">
             <label className="label">
               Kind
               <select
@@ -1186,13 +1186,13 @@ function WeightEditor({
 
 function IssueList({ issues }: { issues: FeasibilityIssue[] }) {
   if (issues.length === 0) {
-    return <div className="mt-4 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">No feasibility issues reported.</div>
+    return <div className="mt-4 rounded border border-emerald-900/70 bg-emerald-950 px-3 py-2 text-sm text-emerald-200">No feasibility issues reported.</div>
   }
 
   return (
     <div className="mt-4 grid gap-2">
       {issues.map((issue, index) => (
-        <div key={`${issue.code}-${index}`} className="flex gap-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <div key={`${issue.code}-${index}`} className="flex gap-2 rounded border border-amber-900/70 bg-amber-950 px-3 py-2 text-sm text-amber-200">
           <AlertTriangle className="mt-0.5 shrink-0" size={16} />
           <span>{issue.message}</span>
         </div>
@@ -1204,18 +1204,18 @@ function IssueList({ issues }: { issues: FeasibilityIssue[] }) {
 function ProgressTopic({ topic }: { topic: Topic }) {
   const percent = topic.targetMinutes > 0 ? Math.min(100, Math.round((topic.completedMinutes / topic.targetMinutes) * 100)) : 0
   return (
-    <div className="rounded border border-slate-200 bg-white p-3">
+    <div className="rounded border border-slate-800 bg-slate-950 p-3">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="font-medium">{topic.name}</div>
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-slate-400">
             {formatHours(topic.completedMinutes)} / {formatHours(topic.targetMinutes)}
           </div>
         </div>
-        <span className="font-mono text-xs text-slate-500">{percent}%</span>
+        <span className="font-mono text-xs text-slate-400">{percent}%</span>
       </div>
-      <div className="mt-3 h-2 rounded bg-slate-100">
-        <div className="h-2 rounded bg-teal-600" style={{ width: `${percent}%` }} />
+      <div className="mt-3 h-2 rounded bg-slate-800">
+        <div className="h-2 rounded bg-teal-400" style={{ width: `${percent}%` }} />
       </div>
     </div>
   )
@@ -1226,11 +1226,11 @@ function SessionRow({ session }: { session: PersistedSession }) {
     <div className="session-row">
       <div>
         <div className="font-medium">{session.focusName}</div>
-        <div className="text-xs text-slate-500">{session.topicName}</div>
+        <div className="text-xs text-slate-400">{session.topicName}</div>
       </div>
       <div className="text-right text-sm">
         <div>{minutesToClock(session.startMinute)}-{minutesToClock(session.endMinute)}</div>
-        <div className="text-xs text-slate-500">{session.status}</div>
+        <div className="text-xs text-slate-400">{session.status}</div>
       </div>
     </div>
   )
@@ -1238,8 +1238,8 @@ function SessionRow({ session }: { session: PersistedSession }) {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded border border-slate-200 bg-white p-3">
-      <div className="text-xs text-slate-500">{label}</div>
+    <div className="rounded border border-slate-800 bg-slate-950 p-3">
+      <div className="text-xs text-slate-400">{label}</div>
       <div className="mt-1 text-lg font-semibold">{value}</div>
     </div>
   )
@@ -1247,8 +1247,8 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function ChecklistItem({ ok, text }: { ok: boolean; text: string }) {
   return (
-    <div className="flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm">
-      <CheckCircle2 size={16} className={ok ? 'text-emerald-600' : 'text-slate-300'} />
+    <div className="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm">
+      <CheckCircle2 size={16} className={ok ? 'text-emerald-400' : 'text-slate-600'} />
       {text}
     </div>
   )
@@ -1256,14 +1256,14 @@ function ChecklistItem({ ok, text }: { ok: boolean; text: string }) {
 
 function StatusPill({ ok }: { ok: boolean }) {
   return (
-    <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${ok ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+    <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${ok ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'}`}>
       {ok ? 'Ready' : 'Needs Setup'}
     </span>
   )
 }
 
 function EmptyState({ text }: { text: string }) {
-  return <div className="rounded border border-dashed border-slate-300 bg-white px-4 py-6 text-center text-sm text-slate-500">{text}</div>
+  return <div className="rounded border border-dashed border-slate-700 bg-slate-950 px-4 py-6 text-center text-sm text-slate-400">{text}</div>
 }
 
 function titleForView(view: ViewKey) {
